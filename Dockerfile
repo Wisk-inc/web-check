@@ -45,6 +45,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/api ./api
+COPY --from=build /app/scam-finder ./scam-finder
 COPY --from=build /app/public ./public
 COPY --from=build /app/server.js /app/healthcheck.js /app/package.json /app/yarn.lock ./
 

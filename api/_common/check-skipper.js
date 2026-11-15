@@ -111,6 +111,7 @@ const publicOnlyChecks = [
   'location',
   'quality',
   'rank',
+  'scam-finder',
   'shodan',
   'social-presence',
   'subdomains',

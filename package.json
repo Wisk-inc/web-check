@@ -18,7 +18,9 @@
     "lint": "eslint --config .config/eslint.config.js .",
     "format:check": "prettier --check --ignore-unknown '!yarn.lock' '!**/*.md' .",
     "format:fix": "prettier --write --ignore-unknown '!yarn.lock' '!**/*.md' .",
-    "hold-my-beer": "yarn format:fix && yarn lint && yarn typecheck"
+    "hold-my-beer": "yarn format:fix && yarn lint && yarn typecheck",
+    "scam-finder": "node scam-finder/cli.js",
+    "test:scam-finder": "node --test \"scam-finder/test/*.test.js\""
   },
   "dependencies": {
     "@astrojs/check": "^0.9.12",
