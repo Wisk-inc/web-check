@@ -404,8 +404,8 @@ class Investigation {
     let added = 0;
     for (const row of sites) {
       const link = {
-        type: 'kit',
-        value: `${kit.name} (confirmed by Radar)`,
+        type: 'radar',
+        value: kit.name,
         from: seedProfile.domain,
         depth: 1,
       };

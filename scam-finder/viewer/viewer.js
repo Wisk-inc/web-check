@@ -42,6 +42,7 @@
 
   const FOUND = {
     kit: 'Runs the same scam kit',
+    radar: 'Confirmed by Radar as running the same kit',
     filename: 'Serves the same kit file',
     hash: 'Serves a byte-identical file',
     title: 'Shows the same page title',
@@ -694,7 +695,12 @@
     camera.y = 0;
   };
 
-  const leafSize = () => Math.max(2.6, Math.min(8, 3.3 * Math.pow(camera.k, 0.6)));
+  // On a crowded globe the marks shrink, so several hundred sites don't merge into one blob
+  const leafSize = () => {
+    const base = Math.max(2.6, Math.min(8, 3.3 * Math.pow(camera.k, 0.6)));
+    if (ui.view !== 'globe') return base;
+    return base * Math.max(0.5, Math.min(1, Math.sqrt(320 / Math.max(1, scene.nodes.length))));
+  };
 
   const tracePath = (shape, x, y, r) => {
     context.beginPath();
@@ -883,6 +889,7 @@
 
     const size = leafSize();
     const hubs = [];
+    let core = null;
     const order = scene.nodes.slice().sort((a, b) => b.depth - a.depth);
     for (const node of order) {
       if (node.type === 'domain') {
@@ -911,13 +918,18 @@
         context.strokeStyle = colors.accent;
         context.stroke();
         if (isSeed) drawSite(node.domain, node.sx, node.sy, r, 1);
-        context.font = `600 12px ${isSeed ? colors.mono : colors.sans}`;
-        context.textAlign = 'center';
-        context.textBaseline = 'top';
-        context.fillStyle = colors.ink;
-        const name = isSeed ? defang(node.domain.domain) : shorten(node.label, 30);
-        haloText(name, node.sx, node.sy + r + 9);
+        core = { node, r, isSeed };
       }
+    }
+
+    // The name at the centre goes on after everything else, so nothing nearer covers it
+    if (core) {
+      context.font = `600 12px ${core.isSeed ? colors.mono : colors.sans}`;
+      context.textAlign = 'center';
+      context.textBaseline = 'top';
+      context.fillStyle = colors.ink;
+      const name = core.isSeed ? defang(core.node.domain.domain) : shorten(core.node.label, 30);
+      haloText(name, core.node.sx, core.node.sy + core.r + 9);
     }
 
     // Name the groups on the near side, biggest first, skipping any that would overlap

@@ -287,6 +287,10 @@ test('reports defang every indicator and survive hostile titles', async () => {
     2,
     'only the two script blocks of the page itself',
   );
+  assert.match(
+    renderHtml(result, { title: 'Gift <b>Scam</b> Map' }),
+    /<title>Gift bScam\/b Map<\/title>/,
+  );
   const fragment = renderHtml(result, { fragment: true });
   assert.doesNotMatch(fragment, /<html|<body|<!doctype/i);
   assert.match(fragment, /^<title>Scam Map<\/title>/);

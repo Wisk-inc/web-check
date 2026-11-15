@@ -350,7 +350,7 @@ const commands = {
     if (flags.html)
       fs.writeFileSync(
         path.resolve(flags.html),
-        renderHtml(result, { fragment: Boolean(flags.fragment) }),
+        renderHtml(result, { fragment: Boolean(flags.fragment), title: flags.title }),
       );
     if (flags.json) json(result);
     else

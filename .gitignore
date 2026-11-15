@@ -61,3 +61,11 @@ Thumbs.db
 *.swo
 
 .vercel
+
+# ------------------------
+#       SCAM FINDER
+# ------------------------
+# Radar databases, if one is ever kept inside the repo
+*.db
+*.db-wal
+*.db-shm

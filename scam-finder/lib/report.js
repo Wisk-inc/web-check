@@ -416,7 +416,7 @@ const slimForViewer = (result) => ({
 // The interactive map as one self-contained file: no network requests, safe to pass around
 // `fragment` leaves off the document wrapper, for hosts that supply their own
 // With no result it renders the empty page, which shows a lookup form and asks the API
-export const renderHtml = (result, { fragment = false, dir = viewerDir() } = {}) => {
+export const renderHtml = (result, { fragment = false, title, dir = viewerDir() } = {}) => {
   const template = fs.readFileSync(path.join(dir, 'template.html'), 'utf8');
   const css = fs.readFileSync(path.join(dir, 'viewer.css'), 'utf8');
   const js = fs.readFileSync(path.join(dir, 'viewer.js'), 'utf8');
@@ -428,6 +428,11 @@ export const renderHtml = (result, { fragment = false, dir = viewerDir() } = {})
       /(<script type="application\/json" id="scam-data">)[\s\S]*?(<\/script>)/,
       (whole, open, close) => `${open}${data}${close}`,
     );
+  // A page title of the caller's choosing, for when several maps sit side by side
+  if (title) {
+    const safe = String(title).replace(/[<>&]/g, '');
+    html = html.replace('<title>Scam Map</title>', () => `<title>${safe}</title>`);
+  }
   if (fragment) {
     const head = html.slice(
       html.indexOf('<!--fragment:start-->') + 21,

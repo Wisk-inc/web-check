@@ -17,6 +17,7 @@ export const levelFor = (score) => LEVELS.find((level) => score >= level.min).id
 // How much a link to an already-suspect site counts, by the kind of link
 export const LINK_WEIGHTS = {
   kit: 0.65,
+  radar: 0.65,
   filename: 0.6,
   hash: 0.65,
   title: 0.5,
@@ -33,6 +34,7 @@ export const LINK_WEIGHTS = {
 
 export const LINK_LABELS = {
   kit: 'Runs the same scam kit',
+  radar: 'Confirmed by Radar as running the same scam kit',
   filename: 'Serves the same kit file',
   hash: 'Serves a byte-identical file',
   title: 'Shows the same page title',

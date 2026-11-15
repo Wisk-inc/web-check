@@ -52,6 +52,7 @@ Output
   --html FILE       Also save the interactive map (one self-contained file)
   --md FILE         Also save a Markdown report
   --fragment        With --html, omit the <html> wrapper
+  --title TEXT      With --html, the page title (default "Scam Map")
   --quiet           No progress messages
   --no-cache        Ignore and don't write the on-disk cache
 
@@ -88,6 +89,7 @@ const FLAGS_WITH_VALUES = new Set([
   'ct-tiles',
   'seconds',
   'ticks',
+  'title',
 ]);
 const BOOLEAN_FLAGS = new Set([
   'quick',
@@ -181,7 +183,10 @@ const deliver = (result, flags) => {
   if (flags.html)
     written.push([
       'Interactive map',
-      writeFile(flags.html, renderHtml(result, { fragment: Boolean(flags.fragment) })),
+      writeFile(
+        flags.html,
+        renderHtml(result, { fragment: Boolean(flags.fragment), title: flags.title }),
+      ),
     ]);
   if (flags.md) written.push(['Markdown report', writeFile(flags.md, renderMarkdown(result))]);
 
