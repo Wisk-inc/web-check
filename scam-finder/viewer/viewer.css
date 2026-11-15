@@ -220,6 +220,12 @@ select {
   cursor: pointer;
 }
 
+.lookup button.secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
 .lookup button[disabled] {
   opacity: 0.6;
   cursor: progress;
@@ -499,8 +505,14 @@ select {
   border-top: 1px solid var(--line);
 }
 
-.zoom #zoom-fit {
+.zoom #zoom-fit,
+.zoom #spin {
   font-size: 11px;
+}
+
+.zoom #spin[aria-pressed='true'] {
+  background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .legend {
@@ -676,6 +688,24 @@ select {
   background: var(--surface);
   font-size: 12px;
   cursor: pointer;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--line);
+  list-style: none;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.timeline .when {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .member-list {

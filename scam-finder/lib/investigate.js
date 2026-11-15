@@ -6,6 +6,7 @@
 //   depth 2  repeat from the campaigns found at depth 1
 
 import { PROFILES } from '../data/profiles.js';
+import { analyzeCode } from './analyzer.js';
 import { ipInfo, lookupDomain, nameserverKey, SHARED_NETWORKS } from './dns.js';
 import { buildCampaigns, buildLinks, summarize, toGraph } from './graph.js';
 import {
@@ -27,6 +28,7 @@ import { certificates } from './sources/ct.js';
 import { FeedIndex } from './sources/feeds.js';
 import { reverseIp } from './sources/reverse-ip.js';
 import * as urlscan from './sources/urlscan.js';
+import { revealLure, rootFromPage, visitSite } from './visit.js';
 import {
   Budget,
   cleanHost,
@@ -388,6 +390,95 @@ class Investigation {
     return list.slice(0, this.options.maxPivots);
   }
 
+  // Sites the Radar scanner has already visited and found running the same kit as the seed.
+  // They arrive with what Radar saw, so none of them needs fetching again
+  addRadarSiblings(seedProfile) {
+    const store = this.options.radar;
+    const kit = seedProfile.kits?.[0];
+    if (!store || !kit) return 0;
+    const sites = store
+      .prepare(
+        "SELECT * FROM sites WHERE kit = ? AND state = 'live' ORDER BY last_check DESC LIMIT ?",
+      )
+      .all(kit.id, this.options.maxDomains);
+    let added = 0;
+    for (const row of sites) {
+      const link = {
+        type: 'kit',
+        value: `${kit.name} (confirmed by Radar)`,
+        from: seedProfile.domain,
+        depth: 1,
+      };
+      const profile = this.addCandidate(row.name, link);
+      if (!profile || profile.live) continue;
+      const detail = row.detail ? JSON.parse(row.detail) : {};
+      profile.live = {
+        ok: true,
+        status: detail.status || 200,
+        checkedUrl: detail.checkedUrl || null,
+      };
+      profile.kits = (detail.kits || []).map((item) => ({ ...item, score: 3, pivots: [] }));
+      profile.root = detail.rootSample
+        ? { sample: detail.rootSample, length: detail.rootSample.length, status: 200 }
+        : null;
+      profile.page = {
+        title: row.title,
+        description: detail.description || null,
+        status: detail.status || 200,
+        bodyLength: 2000,
+        requestedUrl: detail.checkedUrl || null,
+        og: { spoofedHost: detail.spoofedHost || null },
+        trackers: detail.trackers || [],
+        contacts: detail.contacts || [],
+        structure: row.struct_hash,
+        resources: [],
+        externalHosts: [],
+        stages: [],
+        forms: { count: 0, passwordFields: 0, cardFields: 0, actionHosts: [] },
+        behaviour: {},
+      };
+      profile.findings = detail.findings || [];
+      if (row.created)
+        profile.registration = {
+          registrar: row.registrar,
+          created: row.created,
+          ageDays: daysBetween(row.created),
+          abuseEmail: detail.abuseEmail || null,
+          statuses: [],
+          nameservers: [],
+        };
+      if (row.ip) {
+        profile.network = [
+          {
+            ip: row.ip,
+            asn: row.asn,
+            asnName: row.network,
+            country: row.country,
+            shared: detail.sharedNetwork ? row.network : null,
+          },
+        ];
+        profile.dns = { status: 'ok', a: [row.ip], ns: row.ns ? row.ns.split(' + ') : [] };
+      }
+      profile.radar = {
+        firstSeen: row.first_seen,
+        lastCheck: row.last_check,
+        checks: row.checks,
+        ups: row.ups,
+      };
+      added += 1;
+    }
+    this.pivots.set(`radar:${kit.id}`, {
+      type: 'radar',
+      value: kit.name,
+      depth: 1,
+      why: 'Sites the Radar scanner has confirmed are running this kit',
+      status: 'ok',
+      total: sites.length,
+      kept: added,
+    });
+    return added;
+  }
+
   // Leads that need no search: they're already in what the seed told us
   addDirectLinks(profile) {
     const from = profile.domain;
@@ -466,37 +557,20 @@ class Investigation {
     await mapLimit(profiles, 5, async (profile) => {
       if (this.ctx.outOfTime(6000) || profile.live) return;
       const latest = latestScan(profile);
-      const sample = (latest?.submittedUrl || latest?.url || `https://${profile.domain}/`).split(
-        '#',
-      )[0];
-      const origin = safeOrigin(sample) || `https://${profile.domain}`;
-      const fetchOptions = { userAgent: this.userAgent, maxStages: 2, timeoutMs: 9000 };
-      const deepLink = sample.replace(/\/$/, '') !== origin;
-      try {
-        if (deepLink) {
-          // The front door first: kits answer there with a tell-tale stub, whatever the link
-          profile.root = await rootFingerprint(this.ctx, origin, fetchOptions);
-        } else {
-          profile.page = await crawlPage(this.ctx, `${origin}/`, fetchOptions);
-          profile.root = rootFromPage(profile.page);
-        }
-      } catch (error) {
-        profile.live = { ok: false, error: error.message, checkedUrl: `${origin}/` };
-        return;
-      }
-      if (deepLink && !this.ctx.outOfTime(6000)) {
-        try {
-          profile.page = await crawlPage(this.ctx, sample, fetchOptions);
-        } catch {
-          // The front door answered, so the site is up even if this old link is dead
-        }
-      }
-      profile.live = {
-        ok: true,
-        status: profile.page?.status ?? profile.root?.status,
-        checkedUrl: sample,
-      };
+      const visit = await visitSite(this.ctx, {
+        domain: profile.domain,
+        sampleUrl: latest?.submittedUrl || latest?.url,
+        userAgent: this.userAgent,
+      });
+      profile.live = visit.live;
+      if (visit.root) profile.root = visit.root;
+      if (visit.page) profile.page = visit.page;
+      if (visit.takedown) profile.takedown = visit.takedown;
+      if (!visit.live.ok) return;
       profile.kits = matchSignatures(profile, profile.page?.rawHtml);
+      if (await revealLure(this.ctx, profile, profile.kits, { userAgent: this.userAgent })) {
+        profile.kits = matchSignatures(profile, profile.page.rawHtml);
+      }
     });
   }
 
@@ -671,6 +745,18 @@ class Investigation {
     if (!profile.kits)
       profile.kits =
         profile.page || profile.root ? matchSignatures(profile, profile.page?.rawHtml) : [];
+    if (profile.page?.rawHtml && !profile.findings) {
+      const analysis = analyzeCode({
+        html: profile.page.rawHtml,
+        text: profile.page.text,
+        host: profile.domain,
+        externalHosts: profile.page.externalHosts,
+        forms: profile.page.forms,
+        isListed: this.feeds ? (host) => this.feeds.lookup(host).length > 0 : undefined,
+      });
+      profile.findings = analysis.findings;
+      profile.codeLayers = analysis.layers;
+    }
     profile.blocklists = this.feeds
       ? uniqueListings([...profile.hosts].flatMap((host) => this.feeds.lookup(host)))
       : [];
@@ -807,6 +893,9 @@ class Investigation {
       const pivots = this.planSeedPivots(seedProfile);
       this.addDirectLinks(seedProfile);
       await this.runPivots(pivots);
+      const fromRadar = this.addRadarSiblings(seedProfile);
+      if (fromRadar)
+        this.progress('radar', `Radar adds ${fromRadar} confirmed copies of the same kit`);
       this.progress('pivot', `Found ${this.related().length} related domains`);
 
       if (options.pages > 0) {
@@ -946,19 +1035,6 @@ const safeOrigin = (url) => {
   }
 };
 
-// When the link we checked was the front page itself, describe it the way rootFingerprint would
-const rootFromPage = (page) => {
-  const body = (page.rawHtml || '').trim();
-  return {
-    status: page.status,
-    contentType: page.contentType,
-    length: page.bodyLength,
-    sample: page.stages.length === 1 && body.length <= 200 ? body : null,
-    sha256: page.bodySha256,
-    redirectedTo: page.finalUrl !== page.requestedUrl ? page.finalUrl : null,
-  };
-};
-
 const latestScan = (profile) =>
   profile.scanList.reduce(
     (latest, scan) => (!latest || String(scan.time) > String(latest.time) ? scan : latest),
@@ -980,6 +1056,7 @@ const uniqueListings = (hits) => {
 // live: it served us a page; offline: it no longer resolves; unreachable: it resolves but
 // gave an error or no answer; resolves: in DNS but not visited; unknown: nobody checked
 const stateOf = (profile) => {
+  if (profile.takedown) return 'offline';
   if (profile.live?.ok) return profile.live.status < 400 ? 'live' : 'unreachable';
   if (profile.dns?.status === 'nxdomain' || profile.dns?.status === 'no-address') return 'offline';
   if (profile.registration?.notRegistered) return 'offline';
@@ -989,11 +1066,11 @@ const stateOf = (profile) => {
   return 'unknown';
 };
 
-const publicOptions = ({ onProgress, ctx, cacheDir, ...options }) => {
+const publicOptions = ({ onProgress, ctx, cacheDir, radar, ...options }) => {
   void onProgress;
   void ctx;
   void cacheDir;
-  return options;
+  return { ...options, radar: Boolean(radar) };
 };
 
 // The shape that leaves this module: plain JSON, no working state
@@ -1023,6 +1100,7 @@ const publicProfile = (profile) => ({
     evidence,
   })),
   blocklists: profile.blocklists,
+  findings: profile.findings || [],
   foundBy: profile.foundBy,
   created: profile.created,
   createdIsEstimate: profile.createdIsEstimate,
@@ -1032,6 +1110,8 @@ const publicProfile = (profile) => ({
   network: profile.network || [],
   scans: profile.scans || null,
   live: profile.live || null,
+  takedown: profile.takedown || null,
+  structure: profile.page?.structure || null,
   page: trimPage(profile.page) || null,
   root: profile.root || null,
   certificates: profile.certificates || null,

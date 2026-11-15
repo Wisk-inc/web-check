@@ -5,6 +5,8 @@
 // or a `behaviour` / `forms` flag by name), `match` is the pattern, `weight` is how much it
 // counts (default 1) and `note` is the plain-English evidence shown when the rule fires
 // `pivots` are searches known to surface more copies of the kit
+// `lureOnAnyPath` says the kit shows its current lure whatever path is asked for, so a
+// made-up path reveals what a confirmed copy is promoting today
 //
 // Found a new kit? Add it here. Pick markers that are odd enough not to occur by accident
 
@@ -53,6 +55,7 @@ export const SIGNATURES = [
       },
     ],
     pivots: [{ type: 'filename', value: 'metaconfig/images/en/01.jpg' }],
+    lureOnAnyPath: true,
   },
   {
     id: 'share-to-claim',

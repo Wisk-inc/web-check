@@ -229,6 +229,12 @@ select {
   cursor: pointer;
 }
 
+.lookup button.secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
 .lookup button[disabled] {
   opacity: 0.6;
   cursor: progress;
@@ -508,8 +514,14 @@ select {
   border-top: 1px solid var(--line);
 }
 
-.zoom #zoom-fit {
+.zoom #zoom-fit,
+.zoom #spin {
   font-size: 11px;
+}
+
+.zoom #spin[aria-pressed='true'] {
+  background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .legend {
@@ -685,6 +697,24 @@ select {
   background: var(--surface);
   font-size: 12px;
   cursor: pointer;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--line);
+  list-style: none;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.timeline .when {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .member-list {
@@ -939,6 +969,7 @@ tbody tr.current {
             placeholder="https://example.buzz/abc123"
           />
           <button type="submit" id="lookup-go">Investigate</button>
+          <button type="button" class="secondary" id="lookup-radar">Open live radar</button>
         </div>
         <p class="hint" id="lookup-status" role="status"></p>
       </form>
@@ -949,7 +980,8 @@ tbody tr.current {
         <section class="board" aria-label="Map of linked sites">
           <div class="controls">
             <div class="segmented" role="group" aria-label="Layout">
-              <button type="button" id="view-tree" aria-pressed="true">Tree</button>
+              <button type="button" id="view-globe" aria-pressed="true">3D</button>
+              <button type="button" id="view-tree" aria-pressed="false">Tree</button>
               <button type="button" id="view-network" aria-pressed="false">Network</button>
             </div>
             <label class="field" id="group-field">
@@ -977,6 +1009,14 @@ tbody tr.current {
                 <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
                 <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
                 <button type="button" id="zoom-fit" aria-label="Fit everything in view">Fit</button>
+                <button
+                  type="button"
+                  id="spin"
+                  aria-pressed="true"
+                  aria-label="Turn the globe automatically"
+                >
+                  Spin
+                </button>
               </div>
               <figcaption class="legend" id="legend"></figcaption>
             </figure>
@@ -1081,6 +1121,9 @@ tbody tr.current {
     query: 'Matched a hunt search',
     keyword: 'Blocklisted name matching a keyword',
     history: 'Earlier scan of the same site',
+    batch: 'In a bulk-registration batch',
+    listed: 'Already on a blocklist',
+    triage: 'Suspicious name',
   };
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -1162,7 +1205,8 @@ tbody tr.current {
     seed: null,
   };
   const ui = {
-    view: 'tree',
+    view: 'globe',
+    spin: !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
     groupBy: 'campaign',
     query: '',
     levels: new Set(LEVELS.map((level) => level.id)),
@@ -1174,7 +1218,28 @@ tbody tr.current {
     campaignsShown: 12,
   };
   const scene = { nodes: [], edges: [], radius: 300, rings: [] };
-  const camera = { x: 0, y: 0, k: 1 };
+  const camera = {
+    x: 0,
+    y: 0,
+    k: 1,
+    yaw: 0,
+    pitch: 0,
+    cosYaw: 1,
+    sinYaw: 0,
+    cosPitch: 1,
+    sinPitch: 0,
+  };
+
+  // Point the 3D camera. The tilt is capped so the globe never flips upside down
+  const aim = (yaw, pitch) => {
+    camera.yaw = yaw;
+    camera.pitch = Math.max(-1.35, Math.min(1.35, pitch));
+    camera.cosYaw = Math.cos(camera.yaw);
+    camera.sinYaw = Math.sin(camera.yaw);
+    camera.cosPitch = Math.cos(camera.pitch);
+    camera.sinPitch = Math.sin(camera.pitch);
+  };
+  aim(-0.6, 0.38);
 
   const campaignOf = (domain) => (domain.campaign ? model.campaigns.get(domain.campaign) : null);
 
@@ -1231,6 +1296,16 @@ tbody tr.current {
       of: (domain) => {
         const tld = `.${domain.domain.split('.').pop()}`;
         return [tld, tld];
+      },
+    },
+    category: {
+      label: 'Type of scam',
+      of: (domain) => {
+        const name =
+          domain.category ||
+          (domain.kits[0] && domain.kits[0].name) ||
+          (domain.lures[0] && domain.lures[0].label);
+        return name ? [name, name] : ['~', 'Type not established'];
       },
     },
     level: {
@@ -1375,6 +1450,98 @@ tbody tr.current {
     scene.edges = edges;
     scene.radius = radius;
     scene.rings = [HUB_RADIUS, LEAF_RADIUS - ROW_GAP / 2, radius];
+  };
+
+  const GLOBE_HUB = 150;
+  const GLOBE_SURFACE = 250;
+  const GOLDEN_ANGLE = 2.399963229728653;
+
+  // 3D: the starting point at the core of a globe, each group a cluster on its surface.
+  // Groups are spread evenly (a Fibonacci sphere); within a group the riskiest site sits
+  // at the centre of its patch and the rest spiral outward
+  const layoutGlobe = () => {
+    const nodes = [];
+    const edges = [];
+    const seed = model.seed;
+    const root = {
+      id: 'root',
+      type: seed ? 'seed' : 'root',
+      x: 0,
+      y: 0,
+      z: 0,
+      domain: seed,
+      label: seed ? seed.domain : model.rootLabel,
+    };
+    nodes.push(root);
+    const groups = groupDomains(visibleDomains().filter((domain) => domain !== seed));
+    // Groups arrive biggest first. Dealing them out in strides, rather than in order,
+    // scatters the big ones around the globe instead of piling them up at one pole
+    const total = groups.length;
+    let stride = Math.max(1, Math.round(total * 0.618));
+    const shared = (a, b) => (b ? shared(b, a % b) : a);
+    while (stride < total && shared(stride, total) !== 1) stride += 1;
+    groups.forEach((group, order) => {
+      const index = (order * stride) % total;
+      const height = total === 1 ? 0 : 1 - (2 * (index + 0.5)) / total;
+      const ring = Math.sqrt(1 - height * height);
+      const turn = index * GOLDEN_ANGLE;
+      const out = [Math.cos(turn) * ring, height, Math.sin(turn) * ring];
+      const hub = {
+        id: `group:${group.key}`,
+        type: 'hub',
+        x: out[0] * GLOBE_HUB,
+        y: out[1] * GLOBE_HUB,
+        z: out[2] * GLOBE_HUB,
+        label: group.label,
+        key: group.key,
+        members: group.items,
+        count: group.items.length,
+      };
+      nodes.push(hub);
+      edges.push({ from: root, to: hub, kind: 'spine' });
+      // Two directions lying flat on the globe at this point
+      const up = Math.abs(out[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      let u = [
+        out[1] * up[2] - out[2] * up[1],
+        out[2] * up[0] - out[0] * up[2],
+        out[0] * up[1] - out[1] * up[0],
+      ];
+      const length = Math.hypot(u[0], u[1], u[2]) || 1;
+      u = [u[0] / length, u[1] / length, u[2] / length];
+      const v = [
+        out[1] * u[2] - out[2] * u[1],
+        out[2] * u[0] - out[0] * u[2],
+        out[0] * u[1] - out[1] * u[0],
+      ];
+      const items = group.items
+        .slice()
+        .sort((a, b) => b.risk.score - a.risk.score || a.domain.localeCompare(b.domain));
+      items.forEach((domain, position) => {
+        const spread = 9.5 * Math.sqrt(position + 0.4);
+        const angle = position * GOLDEN_ANGLE;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const point = [0, 1, 2].map(
+          (axis) => out[axis] * GLOBE_SURFACE + (u[axis] * cos + v[axis] * sin) * spread,
+        );
+        const scale = GLOBE_SURFACE / Math.hypot(point[0], point[1], point[2]);
+        const node = {
+          id: `domain:${domain.domain}`,
+          type: 'domain',
+          x: point[0] * scale,
+          y: point[1] * scale,
+          z: point[2] * scale,
+          domain,
+          hub,
+        };
+        nodes.push(node);
+        edges.push({ from: hub, to: node, kind: 'leaf' });
+      });
+    });
+    scene.nodes = nodes;
+    scene.edges = edges;
+    scene.radius = GLOBE_SURFACE + 12;
+    scene.rings = [];
   };
 
   // A small repeatable random source, so the network settles the same way every time
@@ -1523,6 +1690,7 @@ tbody tr.current {
 
   const layout = () => {
     if (ui.view === 'network') layoutNetwork();
+    else if (ui.view === 'globe') layoutGlobe();
     else layoutTree();
   };
 
@@ -1556,13 +1724,34 @@ tbody tr.current {
     colors.mono = read('font-mono') || 'monospace';
   };
 
-  const toScreen = (node) => [
-    view.width / 2 + camera.x + node.x * camera.k,
-    view.height / 2 + camera.y + node.y * camera.k,
-  ];
+  const FOCAL = 900;
+
+  // Where a node lands on screen. In 3D the scene is turned by the camera's angles and
+  // then foreshortened; each node keeps its depth and scale so it can be sized and sorted
+  const toScreen = (node) => {
+    if (ui.view !== 'globe') {
+      return [
+        view.width / 2 + camera.x + node.x * camera.k,
+        view.height / 2 + camera.y + node.y * camera.k,
+      ];
+    }
+    const z = node.z || 0;
+    const x = node.x * camera.cosYaw + z * camera.sinYaw;
+    const back = z * camera.cosYaw - node.x * camera.sinYaw;
+    const y = node.y * camera.cosPitch - back * camera.sinPitch;
+    node.depth = node.y * camera.sinPitch + back * camera.cosPitch;
+    node.scale = FOCAL / (FOCAL + node.depth);
+    return [
+      view.width / 2 + camera.x + x * camera.k * node.scale,
+      view.height / 2 + camera.y + y * camera.k * node.scale,
+    ];
+  };
 
   // Room to leave around the drawing for the labels that sit outside it
-  const margin = () => (ui.view === 'tree' ? (view.width < 560 ? 84 : 128) : 30);
+  const margin = () => {
+    if (ui.view === 'tree') return view.width < 560 ? 84 : 128;
+    return ui.view === 'globe' ? (view.width < 560 ? 26 : 56) : 30;
+  };
 
   const fit = () => {
     const room = Math.max(60, Math.min(view.width, view.height) / 2 - margin());
@@ -1712,6 +1901,152 @@ tbody tr.current {
     }
   };
 
+  // Three hoops (an equator and two meridians) that turn with the globe, for a sense of depth
+  const HOOPS = [0, 1, 2].map((axis) =>
+    Array.from({ length: 49 }, (unused, step) => {
+      const angle = (step / 48) * Math.PI * 2;
+      const a = Math.cos(angle) * GLOBE_SURFACE;
+      const b = Math.sin(angle) * GLOBE_SURFACE;
+      if (axis === 0) return { x: a, y: 0, z: b };
+      return axis === 1 ? { x: a, y: b, z: 0 } : { x: 0, y: a, z: b };
+    }),
+  );
+
+  const drawGlobe = (focus) => {
+    const span = scene.radius;
+    const lit = (node) => !focus || (node.domain && focus.has(node.domain.domain));
+    // Things on the far side fade, which is most of what makes it read as a solid
+    const fade = (node) => Math.max(0.24, Math.min(1, 0.64 - (node.depth / span) * 0.44));
+
+    for (const node of scene.nodes) {
+      const [x, y] = toScreen(node);
+      node.sx = x;
+      node.sy = y;
+    }
+
+    context.lineWidth = 1;
+    context.strokeStyle = colors['line-soft'];
+    for (const hoop of HOOPS) {
+      context.beginPath();
+      hoop.forEach((point, index) => {
+        const [x, y] = toScreen(point);
+        if (index) context.lineTo(x, y);
+        else context.moveTo(x, y);
+      });
+      context.stroke();
+    }
+
+    for (const edge of scene.edges) {
+      const strength = edge.kind === 'spine' ? 0.5 : lit(edge.to) ? 0.17 : 0.04;
+      context.globalAlpha = strength * fade(edge.to);
+      context.strokeStyle = edge.kind === 'spine' ? colors.line : colors['ink-3'];
+      context.beginPath();
+      context.moveTo(edge.from.sx, edge.from.sy);
+      context.lineTo(edge.to.sx, edge.to.sy);
+      context.stroke();
+    }
+    context.globalAlpha = 1;
+
+    const size = leafSize();
+    const hubs = [];
+    const order = scene.nodes.slice().sort((a, b) => b.depth - a.depth);
+    for (const node of order) {
+      if (node.type === 'domain') {
+        const alpha = (lit(node) ? 1 : 0.25) * fade(node);
+        drawSite(node.domain, node.sx, node.sy, size * node.scale, alpha);
+      } else if (node.type === 'hub') {
+        hubs.push(node);
+        const chosen = ui.selected && ui.selected.type === 'group' && ui.selected.key === node.key;
+        context.globalAlpha = fade(node);
+        context.beginPath();
+        context.arc(node.sx, node.sy, hubSize(node) * node.scale, 0, Math.PI * 2);
+        context.fillStyle = colors.surface;
+        context.fill();
+        context.lineWidth = chosen || ui.hover === node ? 2.2 : 1.4;
+        context.strokeStyle = chosen ? colors.accent : colors['ink-2'];
+        context.stroke();
+        context.globalAlpha = 1;
+      } else {
+        const isSeed = node.type === 'seed';
+        const r = Math.max(7, size * 2);
+        context.beginPath();
+        context.arc(node.sx, node.sy, r + 5, 0, Math.PI * 2);
+        context.fillStyle = isSeed ? colors.surface : colors.accent;
+        context.fill();
+        context.lineWidth = 2;
+        context.strokeStyle = colors.accent;
+        context.stroke();
+        if (isSeed) drawSite(node.domain, node.sx, node.sy, r, 1);
+        context.font = `600 12px ${isSeed ? colors.mono : colors.sans}`;
+        context.textAlign = 'center';
+        context.textBaseline = 'top';
+        context.fillStyle = colors.ink;
+        const name = isSeed ? defang(node.domain.domain) : shorten(node.label, 30);
+        haloText(name, node.sx, node.sy + r + 9);
+      }
+    }
+
+    // Name the groups on the near side, biggest first, skipping any that would overlap
+    context.font = `11px ${colors.sans}`;
+    context.textBaseline = 'middle';
+    const narrow = view.width < 560;
+    const boxes = [];
+    for (const hub of hubs.slice().sort((a, b) => b.count - a.count)) {
+      const forced =
+        ui.hover === hub ||
+        (ui.selected && ui.selected.type === 'group' && ui.selected.key === hub.key);
+      if (hub.depth > span * 0.12 && !forced) continue;
+      // Past a few dozen names the globe turns to noise; the rest appear on hover
+      if (boxes.length >= (narrow ? 12 : 30) && !forced) continue;
+      const text = `${shorten(stripEmoji(hub.label), narrow ? 14 : 24)} · ${hub.count}`;
+      const width = context.measureText(text).width;
+      // Labels point away from the middle, unless that would run them off the edge
+      const reach = hubSize(hub) * hub.scale + 5;
+      let left = hub.sx < view.width / 2 + camera.x;
+      if (left && hub.sx - reach - width < 4) left = false;
+      else if (!left && hub.sx + reach + width > view.width - 4) left = true;
+      const start = hub.sx + (left ? -1 : 1) * reach;
+      const box = {
+        left: left ? start - width : start,
+        right: left ? start : start + width,
+        top: hub.sy - 7,
+        bottom: hub.sy + 7,
+      };
+      const clash = boxes.some(
+        (other) =>
+          box.left < other.right &&
+          box.right > other.left &&
+          box.top < other.bottom &&
+          box.bottom > other.top,
+      );
+      if (clash && !forced) continue;
+      boxes.push(box);
+      context.textAlign = left ? 'right' : 'left';
+      context.globalAlpha = forced ? 1 : fade(hub);
+      context.fillStyle = forced ? colors.ink : colors['ink-2'];
+      haloText(text, start, hub.sy);
+    }
+    context.globalAlpha = 1;
+
+    for (const node of scene.nodes) {
+      const chosen =
+        ui.selected && ui.selected.type === 'domain' && node.domain === ui.selected.domain;
+      if (node.type !== 'domain' || (!chosen && ui.hover !== node)) continue;
+      const r = size * node.scale;
+      context.beginPath();
+      context.arc(node.sx, node.sy, r + 4.5, 0, Math.PI * 2);
+      context.lineWidth = chosen ? 2.2 : 1.5;
+      context.strokeStyle = chosen ? colors.accent : colors.ink;
+      context.stroke();
+      context.font = `600 11px ${colors.mono}`;
+      context.textBaseline = 'middle';
+      const left = node.sx > view.width / 2;
+      context.textAlign = left ? 'right' : 'left';
+      context.fillStyle = colors.ink;
+      haloText(defang(node.domain.domain), node.sx + (left ? -1 : 1) * (r + 9), node.sy);
+    }
+  };
+
   const draw = () => {
     frame = 0;
     const { width, height } = view;
@@ -1722,6 +2057,10 @@ tbody tr.current {
     const cx = width / 2 + camera.x;
     const cy = height / 2 + camera.y;
     const focus = focusSet();
+    if (ui.view === 'globe') {
+      drawGlobe(focus);
+      return;
+    }
     const bright = (node) => !focus || (node.domain && focus.has(node.domain.domain));
 
     context.lineWidth = 1;
@@ -1896,7 +2235,9 @@ tbody tr.current {
     let bestDistance = 24 * 24;
     for (const node of scene.nodes) {
       const [x, y] = toScreen(node);
-      const distance = (x - px) * (x - px) + (y - py) * (y - py);
+      // In 3D, prefer what is on the near side over anything showing through from behind
+      const behind = ui.view === 'globe' && node.depth > 0 ? 260 : 0;
+      const distance = (x - px) * (x - px) + (y - py) * (y - py) + behind;
       if (distance < bestDistance) {
         best = node;
         bestDistance = distance;
@@ -1952,6 +2293,12 @@ tbody tr.current {
 
   const zoomAt = (px, py, factor) => {
     const next = Math.max(0.15, Math.min(8, camera.k * factor));
+    if (ui.view === 'globe') {
+      // The globe stays centred and simply grows or shrinks
+      camera.k = next;
+      requestDraw();
+      return;
+    }
     const wx = (px - view.width / 2 - camera.x) / camera.k;
     const wy = (py - view.height / 2 - camera.y) / camera.k;
     camera.k = next;
@@ -1981,7 +2328,17 @@ tbody tr.current {
     canvas.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, localPoint(event));
     const [px, py] = localPoint(event);
-    drag = { startX: px, startY: py, x: camera.x, y: camera.y, moved: false, pinch: null };
+    stopSpin();
+    drag = {
+      startX: px,
+      startY: py,
+      x: camera.x,
+      y: camera.y,
+      yaw: camera.yaw,
+      pitch: camera.pitch,
+      moved: false,
+      pinch: null,
+    };
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       drag.pinch = { distance: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1 };
@@ -2004,8 +2361,13 @@ tbody tr.current {
       const dy = py - drag.startY;
       if (!drag.moved && Math.hypot(dx, dy) < 5) return;
       drag.moved = true;
-      camera.x = drag.x + dx;
-      camera.y = drag.y + dy;
+      if (ui.view === 'globe') {
+        // Dragging turns the globe, as if you had hold of its surface
+        aim(drag.yaw - dx * 0.0085, drag.pitch + dy * 0.0085);
+      } else {
+        camera.x = drag.x + dx;
+        camera.y = drag.y + dy;
+      }
       canvas.classList.add('dragging');
       showTooltip(null);
       requestDraw();
@@ -2036,6 +2398,8 @@ tbody tr.current {
         startY: rest[1],
         x: camera.x,
         y: camera.y,
+        yaw: camera.yaw,
+        pitch: camera.pitch,
         moved: true,
         pinch: null,
       };
@@ -2056,6 +2420,7 @@ tbody tr.current {
     (event) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
+      stopSpin();
       const [px, py] = localPoint(event);
       zoomAt(px, py, Math.exp(-event.deltaY * 0.012));
     },
@@ -2073,7 +2438,10 @@ tbody tr.current {
       ArrowUp: [0, step],
       ArrowDown: [0, -step],
     };
-    if (moves[event.key]) {
+    if (moves[event.key] && ui.view === 'globe') {
+      stopSpin();
+      aim(camera.yaw + moves[event.key][0] * 0.004, camera.pitch - moves[event.key][1] * 0.004);
+    } else if (moves[event.key]) {
       camera.x += moves[event.key][0];
       camera.y += moves[event.key][1];
     } else if (event.key === '+' || event.key === '=') {
@@ -2097,6 +2465,31 @@ tbody tr.current {
     fit();
     requestDraw();
   });
+
+  // The globe turns slowly by itself until someone takes hold of it
+  let spinning = 0;
+  const spinButton = byId('spin');
+  const spinStep = () => {
+    spinning = 0;
+    if (!ui.spin || ui.view !== 'globe' || !model.data || document.hidden) return;
+    aim(camera.yaw + 0.0026, camera.pitch);
+    draw();
+    spinning = requestAnimationFrame(spinStep);
+  };
+  const startSpin = () => {
+    spinButton.setAttribute('aria-pressed', String(ui.spin));
+    if (ui.spin && ui.view === 'globe' && !spinning) spinning = requestAnimationFrame(spinStep);
+  };
+  function stopSpin() {
+    if (!ui.spin) return;
+    ui.spin = false;
+    spinButton.setAttribute('aria-pressed', 'false');
+  }
+  spinButton.addEventListener('click', () => {
+    ui.spin = !ui.spin;
+    startSpin();
+  });
+  document.addEventListener('visibilitychange', startSpin);
 
   // ---------------------------------------------------------------- panels
 
@@ -2144,6 +2537,46 @@ tbody tr.current {
     if (scroll) byId('record').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
 
+  const stamp = (value) => (value ? `${String(value).slice(0, 16).replace('T', ' ')} UTC` : null);
+
+  // What Radar has seen of a site over time: how long it has lasted and what changed
+  const trackingBlock = (track) => {
+    const window = track.takedownWindow;
+    return h(
+      'div',
+      { class: 'record-block' },
+      h('h4', null, 'Tracking'),
+      h(
+        'dl',
+        { class: 'facts' },
+        fact('Watched since', stamp(track.firstSeen)),
+        fact(
+          'Visits',
+          track.checks ? `${track.checks}, up on ${track.uptime}% of them` : 'Not visited yet',
+        ),
+        fact(
+          'Taken down',
+          window ? `Between ${stamp(window.after)} and ${stamp(window.before)}` : null,
+        ),
+        fact('Down since', !window && track.downSince ? stamp(track.downSince) : null),
+        fact('Why it is down', track.downReason),
+        fact('Last visit', stamp(track.lastCheck)),
+        fact('Changes seen', track.changes ? String(track.changes) : null),
+        fact('Popularity', track.popularity),
+        fact('Why watched', track.why),
+      ),
+      track.events && track.events.length
+        ? h(
+            'ul',
+            { class: 'timeline' },
+            track.events.map((event) =>
+              h('li', null, h('span', { class: 'when' }, stamp(event.at)), ' ', event.text),
+            ),
+          )
+        : null,
+    );
+  };
+
   const domainRecord = (domain) => {
     const parts = [];
     const campaign = campaignOf(domain);
@@ -2167,7 +2600,11 @@ tbody tr.current {
         h(
           'p',
           { class: 'record-kicker' },
-          domain.role === 'seed' ? 'The link you started from' : 'Linked site',
+          domain.role === 'seed'
+            ? 'The link you started from'
+            : domain.track
+              ? 'Watched site'
+              : 'Linked site',
         ),
         h('h3', null, defang(domain.domain)),
         h(
@@ -2178,9 +2615,15 @@ tbody tr.current {
           levelBadge(domain.risk.level),
           copy,
         ),
-        h('p', { class: 'record-kicker' }, STATES[domain.state] || domain.state),
+        h(
+          'p',
+          { class: 'record-kicker' },
+          [STATES[domain.state] || domain.state, domain.category].filter(Boolean).join(' · '),
+        ),
       ),
     );
+
+    if (domain.track) parts.push(trackingBlock(domain.track));
 
     if (domain.title || campaign) {
       parts.push(
@@ -2247,6 +2690,62 @@ tbody tr.current {
           : null,
       ),
     );
+
+    if ((domain.findings || []).length) {
+      parts.push(
+        h(
+          'div',
+          { class: 'record-block' },
+          h('h4', null, 'What its code does'),
+          h(
+            'ul',
+            { class: 'reasons' },
+            domain.findings.map((finding) =>
+              h(
+                'li',
+                null,
+                weightTicks(finding.severity === 3 ? 0.6 : finding.severity === 2 ? 0.35 : 0.1),
+                h(
+                  'span',
+                  null,
+                  finding.label,
+                  h(
+                    'span',
+                    { class: 'reason-detail mono' },
+                    `${finding.hidden ? 'Hidden in encoded script: ' : ''}${shorten(finding.evidence, 140)}`,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    const contacts = (page && page.contacts) || [];
+    if (contacts.length) {
+      parts.push(
+        h(
+          'div',
+          { class: 'record-block' },
+          h('h4', null, 'Contact points on the page'),
+          h(
+            'ul',
+            { class: 'plain-list' },
+            contacts
+              .slice(0, 8)
+              .map((contact) =>
+                h('li', null, `${contact.kind}: `, h('span', { class: 'mono' }, contact.id)),
+              ),
+          ),
+          h(
+            'p',
+            { class: 'reason-detail' },
+            'Often hijacked or throwaway accounts. A lead about the scam, not the identity of a person.',
+          ),
+        ),
+      );
+    }
 
     const shared = model.linksOf.get(domain.domain) || [];
     if (shared.length) {
@@ -2511,6 +3010,7 @@ tbody tr.current {
 
   const overviewRecord = () => {
     const summary = model.data.summary;
+    const recent = model.data.recent || [];
     return [
       h(
         'div',
@@ -2528,6 +3028,37 @@ tbody tr.current {
           'Select a point on the map, or a row in the tables below, to see the evidence for that site.',
         ),
       ),
+      recent.length
+        ? h(
+            'div',
+            { class: 'record-block' },
+            h('h4', null, 'Latest activity'),
+            h(
+              'ul',
+              { class: 'timeline' },
+              recent.slice(0, 14).map((event) =>
+                h(
+                  'li',
+                  null,
+                  h('span', { class: 'when' }, stamp(event.at)),
+                  ' ',
+                  model.byName.has(event.domain)
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          class: 'linklike mono',
+                          onclick: () => selectDomain(model.byName.get(event.domain)),
+                        },
+                        defang(event.domain),
+                      )
+                    : h('span', { class: 'mono' }, defang(event.domain)),
+                  ` ${event.text}`,
+                ),
+              ),
+            ),
+          )
+        : null,
     ];
   };
 
@@ -2582,19 +3113,46 @@ tbody tr.current {
     const summary = model.data.summary;
     const seed = model.seed;
     const tiles = [];
+    const radar = model.data.radar;
+    if (radar) {
+      const count = (value) => Number(value || 0).toLocaleString('en');
+      tiles.push([
+        'Domains indexed',
+        count(radar.indexed.domains),
+        `${count(radar.indexed.blocklisted)} on blocklists`,
+      ]);
+      tiles.push([
+        'Suspect sites watched',
+        count(radar.watched.sites),
+        `${count(radar.watched.visited)} visited so far`,
+      ]);
+      tiles.push([
+        'Up right now',
+        count(radar.watched.live),
+        `${count(radar.watched.runningAKnownKit)} run a known kit`,
+      ]);
+      tiles.push(['Taken down', count(radar.watched.takenDown), 'while being watched']);
+      tiles.push([
+        'New registrations in batches',
+        count(radar.indexed.inBulkBatches),
+        `${radar.batches.length}+ moulds flagged`,
+      ]);
+    }
     if (seed)
       tiles.push(['Risk of this link', `${seed.risk.score}/100`, levelBadge(seed.risk.level)]);
-    tiles.push([
-      seed ? 'Linked sites' : 'Leads collected',
-      String(summary.related),
-      summary.firstSeen ? `first seen ${day(summary.firstSeen)}` : 'in the sources searched',
-    ]);
-    tiles.push([
-      'High or critical',
-      String(summary.levels.critical + summary.levels.high),
-      `of ${summary.domains} scored`,
-    ]);
-    tiles.push(['Campaigns', String(summary.campaigns), 'distinct lures']);
+    if (!radar)
+      tiles.push([
+        seed ? 'Linked sites' : 'Leads collected',
+        String(summary.related),
+        summary.firstSeen ? `first seen ${day(summary.firstSeen)}` : 'in the sources searched',
+      ]);
+    if (!radar)
+      tiles.push([
+        'High or critical',
+        String(summary.levels.critical + summary.levels.high),
+        `of ${summary.domains} scored`,
+      ]);
+    if (!radar) tiles.push(['Campaigns', String(summary.campaigns), 'distinct lures']);
     tiles.push([
       'Countries targeted',
       String(summary.targets.length),
@@ -2603,7 +3161,7 @@ tbody tr.current {
         .map((target) => countryName(target.country))
         .join(', ') || 'none identified',
     ]);
-    tiles.push(['Confirmed live', String(summary.live), `${summary.offline} offline`]);
+    if (!radar) tiles.push(['Confirmed live', String(summary.live), `${summary.offline} offline`]);
     byId('stats').replaceChildren(
       ...tiles.map(([label, value, note]) =>
         h(
@@ -2658,7 +3216,9 @@ tbody tr.current {
       h(
         'span',
         { class: 'legend-item legend-hint' },
-        'Drag to move · pinch or Ctrl + scroll to zoom',
+        ui.view === 'globe'
+          ? 'Drag to turn · pinch or Ctrl + scroll to zoom'
+          : 'Drag to move · pinch or Ctrl + scroll to zoom',
       ),
     );
   };
@@ -2928,9 +3488,9 @@ tbody tr.current {
     renderLinks();
   };
 
-  const relayout = () => {
+  const relayout = (keepCamera) => {
     layout();
-    fit();
+    if (!keepCamera) fit();
     renderChips();
     renderLegend();
     refreshPanels();
@@ -2939,15 +3499,16 @@ tbody tr.current {
 
   // ---------------------------------------------------------------- controls
 
+  const VIEWS = ['globe', 'tree', 'network'];
   const setView = (name) => {
     ui.view = name;
-    byId('view-tree').setAttribute('aria-pressed', String(name === 'tree'));
-    byId('view-network').setAttribute('aria-pressed', String(name === 'network'));
+    for (const id of VIEWS) byId(`view-${id}`).setAttribute('aria-pressed', String(id === name));
     byId('group-field').hidden = name === 'network';
+    spinButton.hidden = name !== 'globe';
     relayout();
+    startSpin();
   };
-  byId('view-tree').addEventListener('click', () => setView('tree'));
-  byId('view-network').addEventListener('click', () => setView('network'));
+  for (const id of VIEWS) byId(`view-${id}`).addEventListener('click', () => setView(id));
   byId('group-by').addEventListener('change', (event) => {
     ui.groupBy = event.target.value;
     if (ui.selected && ui.selected.type === 'group') ui.selected = null;
@@ -2976,7 +3537,10 @@ tbody tr.current {
 
   // ---------------------------------------------------------------- loading
 
-  const show = (data) => {
+  // Draw a result. `keep` is for live refreshes: the view, filters, camera and selection stay put
+  const show = (data, keep) => {
+    const selectedName =
+      keep && ui.selected && ui.selected.type === 'domain' ? ui.selected.domain.domain : null;
     model.data = data;
     model.domains = (data.domains || []).filter((domain) => !(domain.risk && domain.risk.benign));
     model.byName = new Map(model.domains.map((domain) => [domain.domain, domain]));
@@ -2992,8 +3556,10 @@ tbody tr.current {
     model.seed = model.domains.find((domain) => domain.role === 'seed') || null;
     model.rootLabel = data.seed
       ? data.seed.domain
-      : ((data.hunt && data.hunt.profiles) || []).map((profile) => profile.name).join(' + ') ||
-        'Hunt results';
+      : data.kind === 'radar'
+        ? 'Radar'
+        : ((data.hunt && data.hunt.profiles) || []).map((profile) => profile.name).join(' + ') ||
+          'Hunt results';
 
     const target = byId('target');
     target.textContent = data.seed ? defang(data.seed.domain) : model.rootLabel;
@@ -3002,8 +3568,9 @@ tbody tr.current {
     link.hidden = !data.seed || data.seed.url.replace(/\/$/, '') === `https://${data.seed.domain}`;
     link.textContent = data.seed ? shorten(defang(data.seed.url), 150) : '';
     byId('headline').textContent = data.summary.headline;
-    byId('stamp').textContent =
-      `Generated ${String(data.generatedAt).slice(0, 16).replace('T', ' ')} UTC`;
+    byId('stamp').textContent = `${keep ? 'Live · updated' : 'Generated'} ${String(data.generatedAt)
+      .slice(0, keep ? 19 : 16)
+      .replace('T', ' ')} UTC`;
     byId('map').setAttribute(
       'aria-label',
       `Map of ${model.domains.length} linked sites. The same sites are listed in the table below.`,
@@ -3015,17 +3582,24 @@ tbody tr.current {
         h('option', { value: key }, dimension.label),
       ),
     );
-    if (!model.campaigns.size) ui.groupBy = model.seed ? 'found' : 'level';
+    if (!keep && !model.campaigns.size) ui.groupBy = model.seed ? 'found' : 'level';
     select.value = ui.groupBy;
 
-    ui.selected = model.seed ? { type: 'domain', domain: model.seed } : null;
+    const again = selectedName && model.byName.get(selectedName);
+    ui.selected = again
+      ? { type: 'domain', domain: again }
+      : model.seed
+        ? { type: 'domain', domain: model.seed }
+        : null;
     ui.focusLink = null;
     byId('results').hidden = false;
     readColors();
     resize();
     renderStats();
     renderMethod();
-    relayout();
+    relayout(keep);
+    spinButton.hidden = ui.view !== 'globe';
+    startSpin();
   };
 
   const embedded = () => {
@@ -3068,10 +3642,42 @@ tbody tr.current {
       const target = byId('lookup-input').value.trim();
       if (target) run(target);
     });
+    // The live radar: the scanner's watchlist, redrawn every minute while the page is open
+    const radarEndpoint = params.get('radar-api') || '/api/scam-radar';
+    let polling = 0;
+    const loadRadar = async (keep) => {
+      try {
+        const response = await fetch(`${radarEndpoint}?view=map`);
+        const data = await response.json();
+        if (!data || !data.domains)
+          throw new Error((data && (data.error || data.skipped)) || 'No radar data came back');
+        status.textContent = '';
+        show(data, keep);
+        return true;
+      } catch (error) {
+        if (!keep) {
+          status.className = 'hint error';
+          status.textContent = `The live radar is not available: ${error.message}`;
+        }
+        return false;
+      }
+    };
+    const openRadar = async () => {
+      status.className = 'hint';
+      status.textContent = 'Opening the live radar.';
+      if (!(await loadRadar(false)) || polling) return;
+      polling = setInterval(() => {
+        if (!document.hidden) loadRadar(true);
+      }, 60000);
+    };
+    byId('lookup-radar').addEventListener('click', openRadar);
+
     const preset = params.get('url');
     if (preset) {
       byId('lookup-input').value = preset;
       run(preset);
+    } else if (params.has('radar')) {
+      openRadar();
     }
   };
 

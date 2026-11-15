@@ -114,6 +114,12 @@ test('the MCP server completes a handshake and lists its tools', async () => {
       params: { name: 'get_domain_details', arguments: { result_file: '/nonexistent.json' } },
     },
     { jsonrpc: '2.0', id: 5, method: 'no/such/method' },
+    {
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: { name: 'contact_lookup', arguments: { value: '+1 876 555 0142' } },
+    },
   ]);
   const byId = Object.fromEntries(replies.map((message) => [message.id, message]));
   assert.equal(byId[1].result.protocolVersion, '2025-06-18');
@@ -124,6 +130,13 @@ test('the MCP server completes a handshake and lists its tools', async () => {
     'hunt_scams',
     'get_domain_details',
     'render_report',
+    'radar_status',
+    'radar_sites',
+    'radar_site',
+    'radar_events',
+    'radar_scan',
+    'radar_ingest',
+    'contact_lookup',
     'list_hunt_profiles',
   ]);
   for (const tool of byId[2].result.tools) assert.equal(tool.inputSchema.type, 'object');
@@ -132,4 +145,7 @@ test('the MCP server completes a handshake and lists its tools', async () => {
   // A failing tool is a readable result for the model, not a protocol error
   assert.equal(byId[4].result.isError, true);
   assert.equal(byId[5].error.code, -32601);
+  const contact = JSON.parse(byId[6].result.content[0].text);
+  assert.equal(contact.country, 'JM');
+  assert.match(contact.caveat, /not as the identity of a person/);
 });

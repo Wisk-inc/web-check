@@ -12,7 +12,15 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { describeContact } from './lib/contacts.js';
 import { PROFILES, defang, hunt, investigate } from './lib/index.js';
+import { NetContext } from './lib/net.js';
+import { detectCohorts, markCohorts } from './lib/radar/cohorts.js';
+import { tick, watch } from './lib/radar/daemon.js';
+import { SOURCES } from './lib/radar/ingest.js';
+import { RadarStore, defaultDbPath } from './lib/radar/store.js';
+import { describeEvent, overview, siteReport } from './lib/radar/view.js';
+import { loadPsl, parseTarget, refang } from './lib/util.js';
 import { compactResult, renderHtml, renderMarkdown } from './lib/report.js';
 
 const SERVER = { name: 'scam-finder', version: '1.0.0' };
@@ -26,6 +34,8 @@ const INSTRUCTIONS =
   '(for example the "jamaica" profile). Both save a full JSON result and an interactive HTML ' +
   'map to disk and return a digest; use get_domain_details to drill into one domain. Risk ' +
   'scores are evidence-based estimates for triage, not proof: say so when reporting them, ' +
+  'The radar_* tools query Radar, a continuous scanner with its own database of millions of ' +
+  'domains: radar_status for the big picture, radar_sites and radar_site to explore it. ' +
   'and keep indicators defanged (hxxp, [.]) when quoting them to people.';
 
 const depthSchema = {
@@ -161,6 +171,154 @@ const TOOLS = [
     },
   },
   {
+    name: 'radar_status',
+    description:
+      'Headline numbers from Radar, the continuous scanner: how many domains are indexed (16M+ once built), how many suspect sites are being watched, how many are up, how many were taken down, the bulk-registration batches found, and what the last scan cycle did. ' +
+      'If no database exists yet, the reply says how to build one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: {
+          type: 'boolean',
+          description: 'Recount the whole index (a few seconds) instead of using cached totals.',
+        },
+      },
+    },
+  },
+  {
+    name: 'radar_sites',
+    description:
+      'List suspect sites on the Radar watchlist, highest risk first by default. Filter by state (live, offline, unreachable, blocked, suspended, parked), minimum risk, or text matched against domain, page title, kit and country code.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        state: { type: 'string', description: 'Only sites in this state, e.g. "live".' },
+        min_risk: { type: 'integer', minimum: 0, maximum: 100 },
+        query: {
+          type: 'string',
+          description: 'Text to match, e.g. "airtel", "whatsapp-brand-gift" or "JM".',
+        },
+        order: {
+          type: 'string',
+          enum: ['risk', 'recent', 'checked', 'down'],
+          description:
+            'risk (default), recent = newest on the watchlist, down = most recently taken down.',
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 300, description: 'Default 40.' },
+      },
+    },
+  },
+  {
+    name: 'radar_site',
+    description:
+      'Everything Radar knows about one domain: risk and reasons, what its code does (static analysis findings), kit, lure and target country, uptime, when it was taken down and why, popularity rank, hosting and registration, contact points found on the page, other watched sites sharing its fingerprints, and its event history.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'The domain (defanged input is accepted).' },
+      },
+      required: ['domain'],
+    },
+  },
+  {
+    name: 'radar_events',
+    description:
+      'Recent changes Radar has recorded: takedowns, sites coming back, lure switches, kit detections, moves between servers, new blocklist entries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        types: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [
+              'taken-down',
+              'back',
+              'title',
+              'rebuilt',
+              'content',
+              'moved',
+              'nameservers',
+              'kit',
+              'risk',
+              'listed',
+              'first-visit',
+              'watched',
+            ],
+          },
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Default 50.' },
+      },
+    },
+  },
+  {
+    name: 'radar_scan',
+    description:
+      'Run Radar scan cycles now: read the newest TLS certificates, put the most suspicious unvisited names on the watchlist, visit every site that is due, and record what changed. Each cycle takes up to a minute. ' +
+      'For unattended scanning, run "node scam-finder/cli.js radar run" in a terminal instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cycles: { type: 'integer', minimum: 1, maximum: 5, description: 'Default 1.' },
+        checks: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Site visits per cycle. Default 150.',
+        },
+        watch: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Domains to put on the watchlist first, so this scan visits them.',
+        },
+        certificates: { type: 'boolean', description: 'Read the certificate logs. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'radar_ingest',
+    description:
+      `Load domain names into the Radar index. Sources: ${Object.entries(SOURCES)
+        .map(([id, source]) => `${id} (${source.about})`)
+        .join('; ')}. ` +
+      '"ranked" takes about three minutes and 600 MB; the others take seconds. Building everything gives an index of over 18 million domains.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sources: {
+          type: 'array',
+          items: { type: 'string', enum: Object.keys(SOURCES) },
+          description: 'Default ["feeds", "ct"].',
+        },
+        limit: {
+          type: 'integer',
+          description: 'For "ranked": how many domains to load. Default 15,000,000.',
+        },
+      },
+    },
+  },
+  {
+    name: 'contact_lookup',
+    description:
+      'Describe an email address or phone number that a scam asks victims to use: provider type or country and numbering range (with regulator warnings for known callback-scam area codes), which watched scam sites publish it, and with online=true whether spam-report services know it and which breaches include it (breach names only, needs HIBP_API_KEY). ' +
+      'It never returns leaked passwords or personal records. Such contacts are often hijacked or throwaway accounts: report results as a lead about the scam, never as the identity of a person.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        value: {
+          type: 'string',
+          description: 'An email address or a phone number with country code.',
+        },
+        online: {
+          type: 'boolean',
+          description:
+            'Also query the spam-report and breach-notification services. Default false.',
+        },
+      },
+      required: ['value'],
+    },
+  },
+  {
     name: 'list_hunt_profiles',
     description: 'List the saved hunt profiles with what each one searches for.',
     inputSchema: { type: 'object', properties: {} },
@@ -195,6 +353,22 @@ const loadResult = (file) => {
   return result;
 };
 
+// Open the Radar database for one tool call. Read-only tools need it to exist already
+const withRadar = async (work, create = false) => {
+  const file = defaultDbPath();
+  if (!create && !fs.existsSync(file)) {
+    throw new Error(
+      `There is no Radar database at ${file} yet. Build one with the radar_ingest tool, or: node scam-finder/cli.js radar ingest all`,
+    );
+  }
+  const store = await RadarStore.open(file);
+  try {
+    return await work(store);
+  } finally {
+    store.close();
+  }
+};
+
 const engineOptions = (args, progress) => ({
   depth: args.depth,
   maxDomains: args.max_domains,
@@ -213,8 +387,16 @@ const digest = (result, files, args) => ({
 const handlers = {
   async investigate_url(args, progress) {
     if (!args.target) throw new Error('target is required');
-    const result = await investigate(String(args.target), engineOptions(args, progress));
-    return digest(result, saveResult(result, result.seed.domain), args);
+    const radar = fs.existsSync(defaultDbPath()) ? await RadarStore.open(defaultDbPath()) : null;
+    try {
+      const result = await investigate(String(args.target), {
+        ...engineOptions(args, progress),
+        radar,
+      });
+      return digest(result, saveResult(result, result.seed.domain), args);
+    } finally {
+      radar?.close();
+    }
   },
 
   async hunt_scams(args, progress) {
@@ -260,6 +442,123 @@ const handlers = {
     );
     fs.writeFileSync(output, format === 'markdown' ? renderMarkdown(result) : renderHtml(result));
     return { format, output_file: output };
+  },
+
+  async radar_status(args) {
+    return withRadar((store) => overview(store, { refresh: Boolean(args.refresh) }));
+  },
+
+  async radar_sites(args) {
+    return withRadar((store) =>
+      store
+        .listSites({
+          limit: args.limit || 40,
+          minRisk: args.min_risk || 0,
+          state: args.state,
+          query: args.query,
+          order: args.order,
+        })
+        .map((site) => ({
+          domain: defang(site.name),
+          risk: site.risk,
+          level: site.level,
+          state: site.state,
+          type: site.category,
+          kit: site.kit,
+          title: site.title,
+          targets: (site.detail.targets || []).map((target) => target.country),
+          uptime: site.checks
+            ? `${Math.round((100 * site.ups) / site.checks)}% of ${site.checks} visits`
+            : 'not visited yet',
+          takenDown: site.taken_down ? new Date(site.taken_down * 1000).toISOString() : null,
+          downReason: site.down_reason,
+          network: site.network,
+          why: site.why,
+        })),
+    );
+  },
+
+  async radar_site(args) {
+    await loadPsl();
+    const name = parseTarget(String(args.domain || '')).domain;
+    return withRadar((store) => {
+      const report = siteReport(store, name);
+      if (!report) throw new Error(`${name} is not in the Radar index`);
+      return report;
+    });
+  },
+
+  async radar_events(args) {
+    return withRadar((store) =>
+      store.recentEvents({ limit: args.limit || 50, types: args.types }).map(describeEvent),
+    );
+  },
+
+  async radar_scan(args, progress) {
+    await loadPsl();
+    return withRadar(async (store) => {
+      if (args.watch?.length)
+        watch(
+          store,
+          args.watch.map((value) => parseTarget(String(value)).domain),
+        );
+      const reports = [];
+      for (let cycle = 0; cycle < (args.cycles || 1); cycle += 1) {
+        reports.push(
+          await tick(store, {
+            checks: args.checks,
+            ct: args.certificates !== false,
+            log: (message) => progress?.({ stage: 'radar', message }),
+          }),
+        );
+      }
+      return { cycles: reports, now: overview(store).watched };
+    }, true);
+  },
+
+  async radar_ingest(args, progress) {
+    await loadPsl();
+    return withRadar(async (store) => {
+      const ctx = new NetContext({});
+      const done = [];
+      store.bulkMode(true);
+      for (const id of args.sources?.length ? args.sources : ['feeds', 'ct']) {
+        const result = await SOURCES[id].run(store, ctx, {
+          limit: args.limit,
+          feeds: 'all',
+          log: (message) => progress?.({ stage: id, message }),
+        });
+        done.push({ source: id, names: result.names, seconds: Math.round(result.ms / 1000) });
+      }
+      store.bulkMode(false);
+      const batches = markCohorts(store, detectCohorts(store)).length;
+      return {
+        ingested: done,
+        bulkRegistrationBatches: batches,
+        indexed: overview(store, { refresh: true }).indexed,
+        problems: ctx.errors,
+      };
+    }, true);
+  },
+
+  async contact_lookup(args) {
+    const info = await describeContact(new NetContext({}), refang(String(args.value || '')), {
+      online: Boolean(args.online),
+    });
+    if (!info)
+      throw new Error('That is neither an email address nor a phone number with a country code');
+    if (fs.existsSync(defaultDbPath())) {
+      await withRadar((store) => {
+        const key = info.kind === 'email' ? info.email : info.phone;
+        info.onWatchedScamSites = [
+          ...new Set([
+            ...store.indicatorSites(info.kind, key),
+            ...(info.kind === 'phone' ? store.indicatorSites('whatsapp', key) : []),
+          ]),
+        ].map(defang);
+      });
+    }
+    return info;
   },
 
   async list_hunt_profiles() {

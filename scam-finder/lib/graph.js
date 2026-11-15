@@ -96,6 +96,7 @@ const LINK_KINDS = {
   tracker: { label: 'Same tracking ID', strength: 'strong' },
   contact: { label: 'Same contact or wallet', strength: 'strong' },
   certificate: { label: 'Shared TLS certificate', strength: 'strong' },
+  structure: { label: 'Same page skeleton', strength: 'strong' },
   server: { label: 'Same dedicated server', strength: 'medium' },
   redirect: { label: 'Same redirect chain', strength: 'medium' },
   registered: { label: 'Registered the same day', strength: 'medium' },
@@ -155,6 +156,8 @@ export const buildLinks = (domains) => {
           `${address.ip} (${address.asnName || `AS${address.asn}`})`,
         );
     }
+    if (domain.structure)
+      put('structure', domain.structure, domain, `Page skeleton ${domain.structure.slice(0, 8)}…`);
     if (domain.nameservers?.accountLevel) put('nameservers', domain.nameservers.key, domain);
     if (domain.batch)
       put('registered', domain.batch.date, domain, `Registered ${domain.batch.date}`);

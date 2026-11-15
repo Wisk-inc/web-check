@@ -29,7 +29,7 @@ export const RISKY_TLDS = new Set(
 
 const VOWELS = /[aeiou]/g;
 // Letter pairs that make up most English and romanised words; random strings rarely hit them
-const COMMON_PAIRS = new Set(
+export const COMMON_PAIRS = new Set(
   (
     'th he in er an re on at en nd ti es or te of ed is it al ar st to nt ng se ha as ou io le ' +
     've co me de hi ri ro ic ne ea ra ce li ch ll be ma si om ur ca el ta la ns di fo ho pe ec ' +
@@ -214,6 +214,40 @@ const LURES = [
     weak: [
       /\b(windows defender|security (alert|warning)|call (support|microsoft|apple)|toll.?free)\b/i,
     ],
+  },
+  {
+    id: 'investment',
+    label: 'Fake investment or paid-task platform',
+    strong: [
+      /\b(?:daily|per day) (?:income|profit|earnings?|returns?|commission)\b/i,
+      /\bgrab (?:an? )?orders?\b|\btask (?:hall|center|commission)\b|\bVIP ?[1-9]\b.{0,40}\b(?:recharge|commission|income)\b/i,
+    ],
+    weak: [
+      /\b(?:recharge|top[- ]?up|deposit) (?:now|bonus|amount)\b/i,
+      /\b(?:invite|referral|team) (?:bonus|commission|rebate)\b/i,
+      /\bwithdraw(?:al)? (?:record|now|anytime)\b/i,
+    ],
+  },
+  {
+    id: 'loan',
+    label: 'Advance-fee loan offer',
+    strong: [
+      /\b(?:instant|guaranteed|same[- ]day) (?:loan|approval)\b.{0,80}\b(?:no credit check|bad credit|without collateral)\b/i,
+      /\bloan\b.{0,60}\b(?:processing|insurance|activation|registration) fee\b/i,
+    ],
+    weak: [
+      /\b(?:instant|quick|easy|personal) loans?\b/i,
+      /\bno credit check\b|\bbad credit (?:ok|welcome|accepted)\b/i,
+    ],
+  },
+  {
+    id: 'recovery',
+    label: 'Fund-recovery pitch aimed at people already scammed',
+    strong: [
+      /\b(?:recover|retrieve|get back) (?:your )?(?:lost|stolen|scammed) (?:funds|money|crypto|bitcoin|investment)\b/i,
+      /\b(?:fund|asset|crypto|chargeback) recovery (?:expert|agent|service|specialist|team)s?\b/i,
+    ],
+    weak: [/\b(?:scam|fraud) victims?\b/i, /\bmoney[- ]back\b|\bchargeback\b/i],
   },
   {
     id: 'job',
@@ -505,6 +539,7 @@ export const matchSignatures = (profile, html = '') => {
         score,
         evidence: fired,
         pivots: signature.pivots,
+        lureOnAnyPath: Boolean(signature.lureOnAnyPath),
       });
     }
   }

@@ -106,7 +106,7 @@ See **[web-check.xyz/about](https://web-check.xyz/about)** for the full list of 
 
 ### Scam Finder
 
-This fork adds **[Scam Finder](../scam-finder/README.md)**: give it one suspicious link and it maps the other sites run by the same operation, scores each one with its reasons, and draws the result as an interactive map. It runs from the command line (`node scam-finder/cli.js investigate <url>`), as an MCP server for AI agents, or through the API at `/api/scam-finder`, with the map hosted at `/scam-finder/`.
+This fork adds **[Scam Finder](../scam-finder/README.md)**: give it one suspicious link and it maps the other sites run by the same operation, reads their code for malicious behaviour, scores each one with its reasons, and draws the result as an interactive 3D map. Its **Radar** mode scans continuously, keeping an index of over 18 million domains and recording when watched scam sites change or are taken down. It runs from the command line (`node scam-finder/cli.js investigate <url>`, `node scam-finder/cli.js radar run`), as an MCP server for AI agents, or through the API at `/api/scam-finder` and `/api/scam-radar`, with the map hosted at `/scam-finder/`.
 
 ---
 

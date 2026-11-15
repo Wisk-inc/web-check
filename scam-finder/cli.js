@@ -10,6 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FEEDS, FEED_PRESETS, PROFILES, hunt, investigate } from './lib/index.js';
+import { RADAR_HELP, radarCommand } from './lib/radar/commands.js';
+import { RadarStore, defaultDbPath } from './lib/radar/store.js';
 import { compactResult, renderHtml, renderMarkdown, renderText } from './lib/report.js';
 
 const HELP = `Scam Finder: map the sites and infrastructure behind a scam link.
@@ -18,12 +20,14 @@ Usage
   node scam-finder/cli.js investigate <url-or-domain> [options]
   node scam-finder/cli.js hunt <profile ...> [--query Q] [--keyword K] [options]
   node scam-finder/cli.js report <result.json> [--html FILE] [--md FILE]
+  node scam-finder/cli.js radar <command>      (continuous scanner: "radar help")
   node scam-finder/cli.js profiles | feeds | build-viewer | help
 
 Commands
   investigate   Profile a suspect link, then find sites that share its fingerprints
   hunt          Collect fresh leads from saved profiles, raw urlscan queries or keywords
   report        Re-render a saved JSON result as an interactive map or Markdown
+  radar         Scan continuously into a database of 16M+ domains, and query it
   profiles      List the hunt profiles
   feeds         List the blocklist feeds
   build-viewer  Regenerate public/scam-finder/index.html after editing scam-finder/viewer/
@@ -73,6 +77,17 @@ const FLAGS_WITH_VALUES = new Set([
   'query',
   'keyword',
   'limit',
+  'db',
+  'state',
+  'min-risk',
+  'order',
+  'types',
+  'shape',
+  'checks',
+  'promote',
+  'ct-tiles',
+  'seconds',
+  'ticks',
 ]);
 const BOOLEAN_FLAGS = new Set([
   'quick',
@@ -83,6 +98,9 @@ const BOOLEAN_FLAGS = new Set([
   'quiet',
   'no-cache',
   'help',
+  'refresh',
+  'no-ct',
+  'online',
 ]);
 
 class UsageError extends Error {}
@@ -184,11 +202,19 @@ const commands = {
   async investigate({ positional, flags }) {
     if (positional.length !== 1)
       throw new UsageError('investigate takes exactly one URL or domain');
-    const result = await investigate(positional[0], {
-      ...toOptions(flags),
-      onProgress: progressPrinter(flags.quiet),
-    });
-    deliver(result, flags);
+    // With a Radar database to hand, every copy of the kit it has confirmed joins the map
+    const database = flags.db || defaultDbPath();
+    const radar = fs.existsSync(database) ? await RadarStore.open(database) : null;
+    try {
+      const result = await investigate(positional[0], {
+        ...toOptions(flags),
+        radar,
+        onProgress: progressPrinter(flags.quiet),
+      });
+      deliver(result, flags);
+    } finally {
+      radar?.close();
+    }
   },
 
   async hunt({ positional, flags }) {
@@ -211,6 +237,11 @@ const commands = {
     if (result.tool !== 'scam-finder')
       throw new UsageError(`${positional[0]} is not a scam-finder result`);
     deliver(result, flags);
+  },
+
+  // The continuous scanner and its database (see `radar help`)
+  async radar(parsed) {
+    await radarCommand(parsed);
   },
 
   async profiles() {
@@ -250,7 +281,7 @@ export const main = async (argv) => {
   try {
     const parsed = parseArgs(rest);
     if (parsed.flags.help) {
-      process.stdout.write(`${HELP}\n`);
+      process.stdout.write(`${command === 'radar' ? RADAR_HELP : HELP}\n`);
       return 0;
     }
     if (!commands[command]) throw new UsageError(`Unknown command "${command}"`);

@@ -146,6 +146,10 @@ const TRACKERS = [
   ['telegram-bot', /api\.telegram\.org\/bot(\d{6,12}):[A-Za-z0-9_-]{30,40}/g, 1],
 ];
 
+// Addresses that look like emails but are file names, placeholders or library boilerplate
+const NOT_AN_EMAIL =
+  /\.(png|jpe?g|gif|webp|svg|css|js|woff2?)$|@(example|domain|email|yourdomain|yoursite|company|sentry|wixpress|test)\.|^(you|your|name|user|username|email|someone|john\.?doe)@/i;
+
 // Contact points and wallets a page asks victims to use
 const CONTACTS = [
   ['telegram', /(?:t\.me|telegram\.me)\/(\+?[A-Za-z0-9_]{5,40})\b/g],
@@ -153,10 +157,35 @@ const CONTACTS = [
     'whatsapp',
     /(?:wa\.me\/|whatsapp\.com\/send\/?\?phone=|whatsapp:\/\/send\?phone=)\+?(\d{7,15})\b/g,
   ],
+  ['email', /mailto:([a-z0-9][a-z0-9._%+-]{0,48}@[a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi],
+  ['phone', /href\s*=\s*["']tel:(\+?[\d\s().-]{7,22})["']/gi],
   ['bitcoin', /\b(bc1[ac-hj-np-z02-9]{25,59})\b/g],
   ['ethereum', /\b(0x[a-fA-F0-9]{40})\b/g],
   ['tron', /\b(T[1-9A-HJ-NP-Za-km-z]{33})\b/g],
 ];
+
+// Emails and international phone numbers written out in the visible text
+const TEXT_CONTACTS = [
+  [
+    'email',
+    /(?<![\w.+-])([a-z0-9][a-z0-9._%+-]{0,48}@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24})(?![\w-])/gi,
+  ],
+  ['phone', /(?<![\w+])(\+\d{1,3}[\s.-]?\(?\d{2,4}\)?(?:[\s.-]?\d{2,4}){2,4})(?!\d)/g],
+];
+
+// One spelling per contact, so the same address or number matches across sites
+const tidyContact = (item) => {
+  if (item.kind === 'email') {
+    const id = item.id.toLowerCase();
+    return NOT_AN_EMAIL.test(id) ? null : { kind: 'email', id };
+  }
+  if (item.kind === 'phone' || item.kind === 'whatsapp') {
+    const digits = item.id.replace(/\D/g, '');
+    if (digits.length < 8 || digits.length > 15) return null;
+    return { kind: item.kind, id: `+${digits}` };
+  }
+  return item;
+};
 
 const collect = (html, patterns, limit = 6) => {
   const found = [];
@@ -290,6 +319,48 @@ const classifyResource = (tagName, tag, url) => {
   return 'media';
 };
 
+// A fingerprint of a page's skeleton: its first few hundred tag names, in order.
+// Copies of one kit share it even when every word and link on the page differs
+export const structureHash = (html) => {
+  const tags = [];
+  for (const match of html.matchAll(/<([a-z][a-z0-9]{0,15})[\s>/]/gi)) {
+    tags.push(match[1].toLowerCase());
+    if (tags.length >= 400) break;
+  }
+  return tags.length >= 8 ? sha256(tags.join(' ')).slice(0, 16) : null;
+};
+
+// A fingerprint of what a page says, with numbers blanked so counters and timestamps
+// don't register as a change
+export const contentHash = (text) => {
+  const words = String(text || '')
+    .toLowerCase()
+    .replace(/\d+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return words.length >= 12 ? sha256(words.slice(0, 6000)).slice(0, 16) : null;
+};
+
+// How the page presents itself to search engines
+const seoFacts = (html, meta, title, text, linkCounts) => {
+  const canonical = html.match(/<link[^>]{0,300}rel\s*=\s*["']?canonical["']?[^>]{0,300}>/i);
+  const types = [...html.matchAll(/"@type"\s*:\s*"([A-Za-z]{2,40})"/g)].map((match) => match[1]);
+  return {
+    titleLength: title ? title.length : 0,
+    description: Boolean(meta.description),
+    canonical: canonical ? attribute(canonical[0], 'href') : null,
+    robots: meta.robots || null,
+    hiddenFromSearch: /noindex/i.test(meta.robots || ''),
+    headings: (html.match(/<h1[\s>]/gi) || []).length,
+    words: text ? text.split(/\s+/).length : 0,
+    internalLinks: linkCounts.internal,
+    externalLinks: linkCounts.external,
+    languages: (html.match(/hreflang\s*=/gi) || []).length,
+    structuredData: uniq(types).slice(0, 6),
+    mobileReady: Boolean(meta.viewport),
+  };
+};
+
 // Everything worth knowing about one HTML document
 export const extractFingerprint = (html, pageUrl) => {
   const page = new URL(pageUrl);
@@ -299,6 +370,7 @@ export const extractFingerprint = (html, pageUrl) => {
   const resources = [];
   const linkHosts = new Set();
   const forms = { count: 0, passwordFields: 0, cardFields: 0, actionHosts: [] };
+  const linkCounts = { internal: 0, external: 0 };
   let baseHref = pageUrl;
 
   for (const match of html.matchAll(TAGS)) {
@@ -312,7 +384,10 @@ export const extractFingerprint = (html, pageUrl) => {
       if (key && content && !(key in meta)) meta[key] = content.slice(0, 600);
     } else if (name === 'a') {
       const url = absolute(attribute(tag, 'href'), baseHref);
-      if (url) linkHosts.add(cleanHost(url.hostname));
+      if (url) {
+        linkHosts.add(cleanHost(url.hostname));
+        linkCounts[registrableDomain(url.hostname) === pageDomain ? 'internal' : 'external'] += 1;
+      }
     } else if (name === 'form') {
       forms.count += 1;
       const url = absolute(attribute(tag, 'action'), baseHref);
@@ -357,8 +432,18 @@ export const extractFingerprint = (html, pageUrl) => {
     ...forms.actionHosts.filter((host) => registrableDomain(host) !== pageDomain),
   ]);
   const text = visibleText(html);
+  const title = titleMatch
+    ? decodeEntities(titleMatch[1]).replace(/\s+/g, ' ').trim().slice(0, 300)
+    : null;
+  const contacts = [...collect(html, CONTACTS, 5), ...collect(text, TEXT_CONTACTS, 5)]
+    .map(tidyContact)
+    .filter(Boolean);
+  const seenContacts = new Set();
 
   return {
+    seo: seoFacts(html, meta, title, text, linkCounts),
+    structure: structureHash(html),
+    content: contentHash(text),
     title: titleMatch
       ? decodeEntities(titleMatch[1]).replace(/\s+/g, ' ').trim().slice(0, 300)
       : null,
@@ -380,7 +465,13 @@ export const extractFingerprint = (html, pageUrl) => {
     linkHosts: [...linkHosts].filter((host) => registrableDomain(host) !== pageDomain).slice(0, 40),
     forms: { ...forms, actionHosts: uniq(forms.actionHosts) },
     trackers: collect(html, TRACKERS),
-    contacts: collect(html, CONTACTS, 5),
+    contacts: contacts
+      .filter(
+        (item) =>
+          !seenContacts.has(`${item.kind}:${item.id}`) &&
+          seenContacts.add(`${item.kind}:${item.id}`),
+      )
+      .slice(0, 20),
     behaviour: scriptBehaviour(html),
     redirectTargets: scriptRedirects(html, pageUrl),
     text: text.slice(0, 1500),

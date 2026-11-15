@@ -29,6 +29,25 @@ node scam-finder/cli.js hunt jamaica --compact --out leads.json --html leads.htm
 
 Never paste a suspect URL into a shell unquoted, and never open one in a browser tool to "check" it. The tool fetches pages safely as text.
 
+## Radar, the continuous scanner
+
+Radar keeps a database of 18M+ domains, watches the suspicious ones and records takedowns and changes. Use the `radar_*` MCP tools, or:
+
+```bash
+node scam-finder/cli.js radar status --json            # is there a database, and what is in it
+node scam-finder/cli.js radar ingest all               # build it once: ~5 minutes, 750 MB, Node 22.5+
+node scam-finder/cli.js radar tick --json              # one scan cycle (up to a minute)
+node scam-finder/cli.js radar sites --state live --query "<text>" --json
+node scam-finder/cli.js radar site <domain> --json     # full record, code findings and history
+node scam-finder/cli.js radar events --types taken-down --json
+node scam-finder/cli.js radar map --html radar.html    # 3D map of the watchlist
+node scam-finder/cli.js radar contact "<email or phone>" --json
+```
+
+`radar run` scans until stopped, so start it in the background rather than waiting on it. Once a database exists, `investigate` adds every copy of the seed's kit that Radar has confirmed.
+
+Be straight about what Radar cannot know: it has no visitor or click counts (only rank), cannot see the real server behind Cloudflare, and maps infrastructure rather than people. `contact` results describe a scam's contact point, which is often a hijacked or throwaway account: never present one as a person's identity, and never use breach data to profile anyone.
+
 ## Report what it finds
 
 - Lead with the headline and the seed's score, then the reasons. The reasons are the finding; the number only ranks.

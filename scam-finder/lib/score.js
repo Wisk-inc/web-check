@@ -1,6 +1,7 @@
 // Turns the evidence on a domain into a 0-100 risk score, with every reason kept alongside it
 // The score ranks what to look at first. It is not a verdict, and the signals say why
 
+import { findingWeight } from './analyzer.js';
 import { isWellKnown, tldRisk } from './heuristics.js';
 import { hostingPlatform } from './util.js';
 
@@ -171,6 +172,16 @@ export const scoreProfile = (profile) => {
       'Front page is an empty stub while deep links serve content',
       profile.root.sample || undefined,
     );
+
+  // What its code is built to do (the four most serious findings)
+  for (const finding of (profile.findings || []).slice(0, 4)) {
+    add(
+      `code:${finding.id}`,
+      findingWeight(finding),
+      `Code: ${finding.label}`,
+      `${finding.hidden ? 'Hidden in encoded script: ' : ''}${finding.evidence}`,
+    );
+  }
 
   // What the address looks like
   const age = onPlatform

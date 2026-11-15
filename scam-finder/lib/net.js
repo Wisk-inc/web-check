@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { sha1, sleep } from './util.js';
 
 // A generic identity for the public APIs we query, overridable for people who want their own
@@ -101,6 +102,27 @@ export const request = async (url, opts = {}) => {
   };
 };
 
+// Open a download as a stream of bytes, for files far too large to hold in memory
+export const openStream = async (url, opts = {}) => {
+  const headers = { 'user-agent': TOOL_UA, accept: '*/*' };
+  for (const [name, value] of Object.entries(opts.headers || {}))
+    headers[name.toLowerCase()] = value;
+  let response;
+  try {
+    response = await fetch(url, { headers, redirect: 'follow', signal: opts.signal });
+  } catch (error) {
+    throw wrapError(error, url);
+  }
+  if (!response.ok || !response.body) {
+    const error = new Error(`HTTP ${response.status} from ${new URL(url).host}`);
+    error.status = response.status;
+    throw error;
+  }
+  const stream = Readable.fromWeb(response.body);
+  stream.headers = Object.fromEntries(response.headers.entries());
+  return stream;
+};
+
 // How hard we're allowed to lean on each service; anything unlisted gets the default
 const HOST_RULES = {
   'urlscan.io': { concurrency: 1, minIntervalMs: 2100 },
@@ -112,6 +134,14 @@ const HOST_RULES = {
   'dns.google': { concurrency: 8, minIntervalMs: 0 },
   'cloudflare-dns.com': { concurrency: 8, minIntervalMs: 0 },
   'raw.githubusercontent.com': { concurrency: 3, minIntervalMs: 0 },
+  'data.commoncrawl.org': { concurrency: 1, minIntervalMs: 500 },
+  'mon.sycamore.ct.letsencrypt.org': { concurrency: 4, minIntervalMs: 0 },
+  'mon.willow.ct.letsencrypt.org': { concurrency: 4, minIntervalMs: 0 },
+  'storage.googleapis.com': { concurrency: 4, minIntervalMs: 0 },
+  'tuscolo2027h1.skylight.geomys.org': { concurrency: 1, minIntervalMs: 400 },
+  'ipwho.is': { concurrency: 1, minIntervalMs: 1100 },
+  'haveibeenpwned.com': { concurrency: 1, minIntervalMs: 6500 },
+  'api.stopforumspam.org': { concurrency: 1, minIntervalMs: 1000 },
 };
 const DEFAULT_RULE = { concurrency: 3, minIntervalMs: 150 };
 
@@ -224,6 +254,15 @@ export class NetContext {
     this.errors = [];
     this.stats = { requests: 0, cacheHits: 0 };
     this.fetchImpl = opts.request || request;
+    this.streamImpl = opts.stream || openStream;
+  }
+
+  // A rate-limited streaming download (the limiter only spaces out the opening request)
+  async stream(url, opts = {}) {
+    return this.limiter.run(url, () => {
+      this.stats.requests += 1;
+      return this.streamImpl(url, opts);
+    });
   }
 
   // Record a source failure once per source, so reports can say what was unavailable

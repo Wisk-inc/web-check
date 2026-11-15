@@ -42,6 +42,7 @@
             placeholder="https://example.buzz/abc123"
           />
           <button type="submit" id="lookup-go">Investigate</button>
+          <button type="button" class="secondary" id="lookup-radar">Open live radar</button>
         </div>
         <p class="hint" id="lookup-status" role="status"></p>
       </form>
@@ -52,7 +53,8 @@
         <section class="board" aria-label="Map of linked sites">
           <div class="controls">
             <div class="segmented" role="group" aria-label="Layout">
-              <button type="button" id="view-tree" aria-pressed="true">Tree</button>
+              <button type="button" id="view-globe" aria-pressed="true">3D</button>
+              <button type="button" id="view-tree" aria-pressed="false">Tree</button>
               <button type="button" id="view-network" aria-pressed="false">Network</button>
             </div>
             <label class="field" id="group-field">
@@ -80,6 +82,14 @@
                 <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
                 <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
                 <button type="button" id="zoom-fit" aria-label="Fit everything in view">Fit</button>
+                <button
+                  type="button"
+                  id="spin"
+                  aria-pressed="true"
+                  aria-label="Turn the globe automatically"
+                >
+                  Spin
+                </button>
               </div>
               <figcaption class="legend" id="legend"></figcaption>
             </figure>
