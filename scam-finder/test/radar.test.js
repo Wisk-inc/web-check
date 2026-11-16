@@ -444,6 +444,18 @@ test('code analysis reads through encoding layers', () => {
       text: 'VIP 1 VIP 2. Recharge now for daily income. Invite bonus 10%. Withdrawal record. Grab orders in the task hall.',
     }).includes('investment-pitch'),
   );
+  // The tag-manager snippet on half the web uses a hidden frame, and is not a finding
+  assert.deepEqual(
+    ids(
+      '<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-ABCDE" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>',
+    ),
+    [],
+  );
+  assert.ok(
+    ids(
+      '<iframe src="https://collector.bad-host.example/x" width="0" height="0"></iframe>',
+    ).includes('hidden-frame'),
+  );
   assert.deepEqual(
     ids(
       '<html><head><title>Bakery</title><script src="/js/app.js"></script></head><body><form action="/search"><input name="q"></form></body></html>',

@@ -741,6 +741,7 @@ class Investigation {
         .concat(title || '')
         .join(' '),
       brands: profile.brands,
+      lures: profile.lures,
     });
     if (!profile.kits)
       profile.kits =
@@ -803,7 +804,8 @@ class Investigation {
 
   // How strongly each related site is tied to the seed, discounted if the seed looks innocent
   associate(profile, seedScore) {
-    const trust = seedScore === null ? 1 : Math.min(1, Math.max(0.15, seedScore / 70));
+    // With no known-bad starting point (a hunt), a link between two leads proves little
+    const trust = seedScore === null ? 0.25 : Math.min(1, Math.max(0.15, seedScore / 70));
     const links = [];
     const seen = new Set();
     for (const found of profile.foundBy) {
@@ -977,6 +979,7 @@ class Investigation {
             targetCountries({
               title: scan.title,
               brands: findBrands({ title: scan.title, host: scan.host }),
+              lures: findLures(scan.title),
             }).some((hit) => pivot.targets.includes(hit.country))
         : undefined;
       await this.runSearchPivot(pivot, keep);
@@ -985,7 +988,9 @@ class Investigation {
     this.feeds = await feedsLoading;
     for (const word of keywords) {
       if (word.length < 4) continue;
-      const hits = this.feeds.filter((host) => host.includes(word), 150);
+      // The word has to start a part of the name: "jncb-login", not a random string that
+      // happens to contain those four letters
+      const hits = this.feeds.filter((host) => keywordInHost(word, host), 150);
       this.pivots.set(`keyword:${word}`, {
         type: 'keyword',
         value: word,
@@ -1018,6 +1023,15 @@ class Investigation {
     });
   }
 }
+
+const keywordInHost = (word, host) => {
+  if (!host.includes(word)) return false;
+  const label = registrableDomain(host).split('.')[0];
+  if (lexical(host).randomLooking && !label.startsWith(word)) return false;
+  return host
+    .split(/[.-]/)
+    .some((part) => part.startsWith(word) || (word.length >= 6 && part.includes(word)));
+};
 
 const safeDomain = (url) => {
   try {

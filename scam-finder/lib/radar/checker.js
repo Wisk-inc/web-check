@@ -245,7 +245,11 @@ export const checkSite = async (ctx, store, site, options = {}) => {
         inDomain,
         inTitle,
       })),
-      targets: targetCountries({ title: title || '', brands: profile.brands }),
+      targets: targetCountries({
+        title: title || '',
+        brands: profile.brands,
+        lures: profile.lures,
+      }),
       contacts: page?.contacts || [],
       trackers: page?.trackers || [],
       seo: page?.seo || null,

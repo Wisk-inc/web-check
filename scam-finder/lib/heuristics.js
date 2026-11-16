@@ -343,6 +343,9 @@ const wellKnown = new Set(WELL_KNOWN_DOMAINS);
 
 // Big platforms and CDNs: never candidates for "related scam site", whatever links to them
 export const isWellKnown = (hostname) => {
+  // Google Translate serves other sites under its own name; the page is not Google's, but
+  // it is not a site of its own either
+  if (cleanHost(hostname).endsWith('.translate.goog')) return true;
   const domain = registrableDomain(hostname);
   if (wellKnown.has(domain)) return true;
   // A platform's own front page, as opposed to one tenant's subdomain
@@ -471,14 +474,17 @@ export const namedCountries = (text) => {
 // named in it, the home country of the brand being impersonated, then an unambiguous script.
 // The locale folder some kits put in their links is ignored on purpose: it follows the
 // visitor, not the campaign
-export const targetCountries = ({ title, brands = [] }) => {
+export const targetCountries = ({ title, brands = [], lures = [] }) => {
   const script = detectScript(stripEmoji(title));
   const tiers = [
     flagCountries(title).map((country) => ({ country, why: 'flag in the title' })),
     currencyCountries(title).map((country) => ({ country, why: 'currency in the title' })),
     namedCountries(title).map((country) => ({ country, why: 'named in the title' })),
     brands
-      .filter((brand) => brand.country && !brand.official && (brand.inTitle || brand.inDomain))
+      // A name that is also an everyday word or a bare acronym ("Globe", "JPS") only counts
+      // next to scam bait, or when it is in the domain itself
+      .filter((brand) => brand.country && !brand.official)
+      .filter((brand) => brand.inDomain || (brand.inTitle && (!brand.common || lures.length > 0)))
       .map((brand) => ({ country: brand.country, why: `impersonates ${brand.name}` })),
     script?.country ? [{ country: script.country, why: `${script.script} script` }] : [],
   ];

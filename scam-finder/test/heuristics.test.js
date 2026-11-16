@@ -132,7 +132,9 @@ test('brands are matched as whole words and official domains are recognised', ()
 test('target country comes from the most reliable evidence available', () => {
   const brands = (title) => findBrands({ title, host: 'x.buzz' });
   const targets = (title) =>
-    targetCountries({ title, brands: brands(title) }).map((hit) => hit.country);
+    targetCountries({ title, brands: brands(title), lures: findLures(title) }).map(
+      (hit) => hit.country,
+    );
   assert.deepEqual(targets(KIT_TITLE), ['JM']);
   assert.deepEqual(targets('Get EGP 3,000 for Free!'), ['EG']);
   assert.deepEqual(targets('👉Globe - Bonifacio Day Gift!🎁'), ['PH']);
@@ -140,6 +142,10 @@ test('target country comes from the most reliable evidence available', () => {
   assert.deepEqual(targets('تمام پاکستانیوں کو 13,000 روپے'), ['PK']);
   assert.deepEqual(targets('Airtel - दिवाली का तोहफ़ा!'), ['IN']);
   assert.deepEqual(targets('Welcome'), []);
+  // An acronym or everyday word is only read as a brand when there is bait beside it
+  assert.deepEqual(targets('JPS - Supply Chain Consulting'), []);
+  assert.deepEqual(targets('Lynk & Co 01 plug-in hybrid'), []);
+  assert.deepEqual(targets('PNB - Diwali Gift!'), ['IN']);
   assert.deepEqual(currencyCountries('₹৮,০০০ নগদ'), ['IN']);
   assert.deepEqual(namedCountries('Welcome to Georgia Tech'), []);
   assert.deepEqual(namedCountries('All Nigerians can apply'), ['NG']);

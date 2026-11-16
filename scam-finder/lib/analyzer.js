@@ -6,7 +6,7 @@
 // what is underneath. A behaviour found only under the wrapping is flagged as hidden
 
 import { BRANDS } from '../data/brands.js';
-import { isOfficialDomain } from './heuristics.js';
+import { isOfficialDomain, isWellKnown } from './heuristics.js';
 import { cleanHost, registrableDomain } from './util.js';
 
 const MAX_SOURCE = 800 * 1024;
@@ -263,10 +263,24 @@ const RULES = [
     severity: 2,
     category: 'malware',
     label: 'Loads another site in an invisible frame',
-    find: (c) =>
-      c.see(
-        /<iframe[^>]{0,400}(?:(?:width|height)\s*=\s*["']?[01](?:px)?["'\s>]|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0[;"'\s])/i,
-      ),
+    find: (c) => {
+      const pattern =
+        /<iframe[^>]{0,400}(?:(?:width|height)\s*=\s*["']?[01](?:px)?["'\s>]|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0[;"'\s])[^>]{0,400}>/gi;
+      for (const [text, hidden] of [
+        [c.html, false],
+        [c.hiddenSource, true],
+      ]) {
+        for (const frame of text.matchAll(pattern)) {
+          const src = frame[0].match(/\ssrc\s*=\s*["']?(?:https?:)?\/\/([^/"'\s>]+)/i);
+          if (!src) continue;
+          // Tag managers, payment widgets and the like use hidden frames all the time
+          const host = cleanHost(src[1]);
+          if (isWellKnown(host) || registrableDomain(host) === registrableDomain(c.host)) continue;
+          return { evidence: `invisible frame from ${host}`, hidden };
+        }
+      }
+      return null;
+    },
   },
   {
     id: 'browser-trap',
@@ -400,6 +414,7 @@ export const analyzeCode = ({
   const context = {
     html: source,
     source: `${source}\n${unpacked.hidden}`,
+    hiddenSource: unpacked.hidden,
     text: String(text || ''),
     host: cleanHost(host),
     externalHosts,
@@ -431,13 +446,15 @@ export const analyzeCode = ({
       // One misbehaving rule must not lose the rest of the analysis
     }
     if (!evidence) continue;
+    // A rule may answer with plain evidence, or say for itself whether it was hidden
+    const own = typeof evidence === 'object';
     findings.push({
       id: rule.id,
       severity: rule.severity,
       category: rule.category,
       label: rule.label,
-      evidence: String(evidence),
-      ...(lastHidden ? { hidden: true } : {}),
+      evidence: String(own ? evidence.evidence : evidence),
+      ...((own ? evidence.hidden : lastHidden) ? { hidden: true } : {}),
     });
   }
 
