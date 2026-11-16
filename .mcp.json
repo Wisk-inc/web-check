@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "scam-finder": {
+      "command": "node",
+      "args": ["scam-finder/mcp-server.js"]
+    }
+  }
+}

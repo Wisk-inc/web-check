@@ -190,6 +190,9 @@ app.get(API_DIR, async (req, res) => {
   res.json(results);
 });
 
+// The scam map is one static page, so serve it even when the GUI is off or not built yet
+app.use('/scam-finder', express.static(path.join(__dirname, 'public', 'scam-finder')));
+
 // Skip the marketing homepage, for self-hosted users
 app.use((req, res, next) => {
   if (req.path === '/' && process.env.BOSS_SERVER !== 'true' && !process.env.DISABLE_GUI) {
